@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QLabel,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QLabel,
                                QMainWindow, QMessageBox, QProgressDialog, QPushButton, QRadioButton,
                                QSplitter, QVBoxLayout, QWidget)
 
 from . import __version__
+from . import updater
 from .document import Document
 from .effects import Phase
 from .export import FORMATS, Cancelled, export
@@ -51,6 +52,31 @@ class ExportWorker(QObject):
             self.finished.emit(self.path, str(exc))
 
 
+class TaskWorker(QObject):
+    """Runs one function off the window's thread (update check, download)."""
+    progress = Signal(int, int)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+        self.cancel = False
+
+    def run(self):
+        try:
+            self.done.emit(self.fn(self))
+        except updater.Cancelled:
+            self.failed.emit('cancelled')
+        except Exception as exc:
+            self.failed.emit(str(exc) or exc.__class__.__name__)
+
+
+def version_text() -> str:
+    b = updater.current_build()
+    return f'{__version__} (build {b})' if b else f'{__version__} (from source)'
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -88,6 +114,9 @@ class MainWindow(QMainWindow):
         self._starter()
         self._title()
         self.resize(1600, 940)
+        self._tasks = []
+        if updater.is_packaged() and updater.current_build() and self._auto_update():
+            QTimer.singleShot(4000, lambda: self.check_for_updates(quiet=True))
 
     # ---- setup
 
@@ -125,6 +154,15 @@ class MainWindow(QMainWindow):
         act(play_m, 'Previous frame', 'Left', lambda: self.player.step(-1))
         act(play_m, 'Next frame', 'Right', lambda: self.player.step(1))
         act(play_m, 'Go to start', 'Home', self.player.stop_to_start)
+        help_m = mb.addMenu('&Help')
+        act(help_m, 'Check for updates…', None, lambda: self.check_for_updates(quiet=False))
+        self.auto_update_action = QAction('Check for updates when starting', self)
+        self.auto_update_action.setCheckable(True)
+        self.auto_update_action.setChecked(self._auto_update())
+        self.auto_update_action.toggled.connect(lambda v: QSettings().setValue('auto_update', v))
+        help_m.addAction(self.auto_update_action)
+        help_m.addSeparator()
+        act(help_m, f'About {APP_NAME}', None, self._about)
         act(play_m, 'Bigger preview', 'F', self._toggle_big_preview)
         act(play_m, 'Repeat playback', 'Ctrl+L', self.player.loop_btn.toggle)
 
@@ -157,7 +195,7 @@ class MainWindow(QMainWindow):
 
     def _title(self):
         name = os.path.basename(self.doc.path) if self.doc.path else 'Untitled'
-        self.setWindowTitle(f'{name}{" •" if self.doc.dirty else ""} — {APP_NAME} {__version__}')
+        self.setWindowTitle(f'{name}{" •" if self.doc.dirty else ""} — {APP_NAME} {version_text()}')
 
     def _msg(self, text):
         self.statusBar().showMessage(text, 5000)
@@ -239,6 +277,128 @@ class MainWindow(QMainWindow):
             e.accept()
         else:
             e.ignore()
+
+    # ---- updates
+
+    def _auto_update(self) -> bool:
+        return QSettings().value('auto_update', True, type=bool)
+
+    def _about(self):
+        QMessageBox.about(self, APP_NAME,
+                          f'<b>{APP_NAME}</b><br>Version {version_text()}<br><br>'
+                          'Transitions, effects and stickers with transparent export.<br>'
+                          f'Updates come from github.com/{updater.REPO}.')
+
+    def _run_task(self, fn, on_done, on_failed, on_progress=None):
+        thread = QThread(self)
+        worker = TaskWorker(fn)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        def finish():
+            thread.quit()
+            thread.wait()
+            self._tasks.remove((thread, worker))
+        worker.done.connect(lambda r: (finish(), on_done(r)))
+        worker.failed.connect(lambda e: (finish(), on_failed(e)))
+        if on_progress:
+            worker.progress.connect(on_progress)
+        self._tasks.append((thread, worker))
+        thread.start()
+        return worker
+
+    def check_for_updates(self, quiet: bool = False):
+        if not updater.is_packaged() or not updater.current_build():
+            if not quiet:
+                QMessageBox.information(self, APP_NAME, 'Updates work in the installed app. '
+                                        'This copy is running from source.')
+            return
+
+        def found(rel):
+            if updater.newer_available(rel):
+                self._offer_update(rel)
+            elif not quiet:
+                QMessageBox.information(self, APP_NAME, f'You have the newest version ({version_text()}).')
+
+        def failed(err):
+            if not quiet:
+                QMessageBox.warning(self, APP_NAME, f'Could not check for updates:\n{err}')
+            else:
+                self._msg('Could not check for updates (offline?).')
+        self._run_task(lambda w: updater.fetch_latest(), found, failed)
+
+    def _offer_update(self, rel):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Update available')
+        lay = QVBoxLayout(dlg)
+        head = QLabel(f'<b>Build {rel.build} is ready.</b>  You have {version_text()}.')
+        lay.addWidget(head)
+        notes = '\n'.join((rel.notes or '').splitlines()[:16])
+        if notes:
+            n = QLabel(notes)
+            n.setWordWrap(True)
+            n.setProperty('muted', True)
+            n.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lay.addWidget(n)
+        size = QLabel(f'Download: {rel.size / 1024 / 1024:.0f} MB. The app restarts to finish; '
+                      'your projects, saved effects and stickers are kept.')
+        size.setWordWrap(True)
+        lay.addWidget(size)
+        auto = QCheckBox('Check for updates when starting')
+        auto.setChecked(self._auto_update())
+        lay.addWidget(auto)
+        bb = QDialogButtonBox()
+        now = bb.addButton('Update now', QDialogButtonBox.ButtonRole.AcceptRole)
+        now.setProperty('accent', True)
+        bb.addButton('Later', QDialogButtonBox.ButtonRole.RejectRole)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        QSettings().setValue('auto_update', auto.isChecked())
+        self.auto_update_action.setChecked(auto.isChecked())
+        if accepted and self._confirm_discard():
+            self._install_update(rel)
+
+    def _install_update(self, rel):
+        root = updater.staging_root_for(rel.build)
+        os_ = os
+        prog = QProgressDialog(f'Downloading build {rel.build}…', 'Cancel', 0, 1000, self)
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+
+        def work(w):
+            os_.makedirs(root, exist_ok=True)
+            z = updater.download(rel, os_.path.join(root, 'download.zip'),
+                                 lambda d, t: (w.progress.emit(d, t), not w.cancel)[1])
+            w.progress.emit(-1, -1)                       # unpacking
+            return updater.stage(z, os_.path.join(root, 'files'))
+
+        def on_progress(d, t):
+            if d < 0:
+                prog.setLabelText('Unpacking…')
+                prog.setRange(0, 0)
+            elif t:
+                prog.setValue(int(1000 * d / t))
+                prog.setLabelText(f'Downloading build {rel.build}…  {d / 1048576:.0f} / {t / 1048576:.0f} MB')
+
+        def done(folder):
+            prog.close()
+            try:
+                updater.launch_installer(folder, cleanup=root)
+            except Exception as exc:
+                QMessageBox.warning(self, APP_NAME, f'Could not start the update:\n{exc}')
+                return
+            self.doc.dirty = False
+            QApplication.instance().quit()
+
+        def failed(err):
+            prog.close()
+            if err != 'cancelled':
+                QMessageBox.warning(self, APP_NAME, f'The update failed:\n{err}\n\nNothing was changed.')
+        worker = self._run_task(work, done, failed, on_progress)
+        prog.canceled.connect(lambda: setattr(worker, 'cancel', True))
 
     # ---- export
 

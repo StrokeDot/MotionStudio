@@ -34,3 +34,9 @@ Tests: `python -m pytest tests`.
 - Playback follows an exact clock at the project frame rate.
 - Export renders on several CPU cores, and the output file is only replaced once
   it is complete.
+
+## Updates
+Help > Check for updates (also checked automatically at start, can be turned off).
+The app downloads the newest build from GitHub, restarts, and keeps your projects,
+saved effects and stickers (they live in AppData). A log is kept at
+%LOCALAPPDATA%\MotionStudio\update.log.
