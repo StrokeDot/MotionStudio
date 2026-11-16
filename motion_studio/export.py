@@ -9,7 +9,7 @@ from typing import Callable
 
 from PySide6.QtGui import QImage
 
-from .scene import Project, render_frame
+from .timeline import Timeline, render_timeline
 
 FORMATS = {
     'prores': 'ProRes 4444 .mov (transparent, best for Filmora)',
@@ -49,7 +49,7 @@ def _rgba_bytes(img: QImage) -> bytes:
     return b''.join(data[y * bpl:y * bpl + w * 4] for y in range(h))
 
 
-def export(project: Project, path: str, fmt: str = 'prores',
+def export(project: Timeline, path: str, fmt: str = 'prores',
            progress: Callable[[int, int], bool] | None = None) -> str:
     """Render every frame and write the file. `progress(done, total)` may return
     False to cancel. Returns the written path (a folder for PNG sequences)."""
@@ -58,7 +58,7 @@ def export(project: Project, path: str, fmt: str = 'prores',
     if fmt == 'png':
         os.makedirs(path, exist_ok=True)
         for i in range(total):
-            render_frame(project, i / project.fps).save(os.path.join(path, f'frame_{i:05d}.png'))
+            render_timeline(project, i / project.fps).save(os.path.join(path, f'frame_{i:05d}.png'))
             if progress and progress(i + 1, total) is False:
                 raise Cancelled()
         return path
@@ -74,7 +74,7 @@ def export(project: Project, path: str, fmt: str = 'prores',
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
     try:
         for i in range(total):
-            proc.stdin.write(_rgba_bytes(render_frame(project, i / project.fps)))
+            proc.stdin.write(_rgba_bytes(render_timeline(project, i / project.fps)))
             if progress and progress(i + 1, total) is False:
                 raise Cancelled()
         proc.stdin.close()

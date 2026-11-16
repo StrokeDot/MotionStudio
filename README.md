@@ -1,17 +1,27 @@
 # Motion Studio
 
-A small Windows app for making animated objects with full control, exported with a
-transparent background to drop onto a video editor's timeline (made for Filmora).
+A Filmora-style app focused on three things: **Transitions, Effects and Stickers**.
+Build animated stickers on a timeline and export them with a transparent background
+(ProRes 4444 `.mov`) to drop onto a video editor's timeline.
 
-- **Objects:** pictures (PNG, JPG, WebP), SVG, animated GIF/WebP, or text.
-- **In / Loop / Out effects:** Fade, Slide, Bounce, Slow bounce, Pop, Zoom, Spin, Flip,
-  Wipe, Blur, Squash drop; loops Float, Hop, Pulse, Wiggle, Swing, Spin, Shake, Blink.
-- **Any direction** for moving effects (8 ways), plus easing, distance, strength,
-  bounce count and timing.
-- **My effects:** save your own settings and reuse them.
-- **Export:** ProRes 4444 `.mov` with transparency (default), or a PNG sequence.
-- Preview over a checkerboard, a solid colour, or your own background picture
-  (preview only, never exported).
+## Layout (like Filmora)
+- **Library (top left):** Transitions / Effects / Stickers tabs, categories, search, and
+  cards that play when you hover them. Click **+** or drag a card onto the timeline.
+- **Player (top centre):** preview over a checkerboard, colour or your own background
+  picture (never exported), timecode, frame stepping, video size, frame snapshot.
+- **Properties (top right):** Sticker (text, placement, timing), Transitions (In and Out,
+  any of 8 directions, duration, easing, distance, bounces) and Effects (stack, on/off,
+  sliders, reset, remove).
+- **Timeline (bottom):** tracks, drag to move, drag edges to trim, split, undo/redo,
+  hide/lock tracks, zoom.
+
+## Library contents
+- **Transitions:** Slide, Bounce, Slow bounce, Squash drop, Pop, Zoom, Fade, Blur, Spin,
+  Flip, Wipe, plus your saved ones under Mine.
+- **Effects:** Motion (Float, Hop, Pulse, Wiggle, Swing, Spin, Shake, Blink) and Look
+  (Drop Shadow, Glow, Outline, Tint, Black & White, Blur), plus Mine.
+- **Stickers:** Mine (import your own PNG, SVG, GIF), built-in shapes, arrows, signs, and
+  text styles.
 
 Run from source: `pip install -r requirements.txt` then `python run.py`.
 Tests: `python -m pytest tests`.
