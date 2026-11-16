@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import math
 
-from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtWidgets import QHBoxLayout, QScrollBar, QSlider, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMenu, QScrollBar, QSlider, QToolButton, QVBoxLayout, QWidget
 
 from .document import Document
 from .library import MIME, sticker_source
@@ -32,6 +32,11 @@ class TimelineCanvas(QWidget):
         self._drag = None
         self._drop = None               # (kind, info) while dragging from the library
         self._thumbs: dict = {}
+        self._snap_line = None
+        self._hover_id = None
+        self._autoscroll = QTimer(self)
+        self._autoscroll.timeout.connect(self._autoscroll_step)
+        self._last_pos = None
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -176,6 +181,16 @@ class TimelineCanvas(QWidget):
         dur_x = self.x_of(tl.duration())
         p.setPen(QPen(QColor(PLAYHEAD), 2))
         p.drawLine(QPointF(HEADER_W, RULER_H - 1), QPointF(max(HEADER_W, dur_x), RULER_H - 1))
+        # Frames already prepared for smooth playback.
+        p.setPen(QPen(QColor(ACCENT), 2))
+        for a, b in getattr(self.doc, 'ready_ranges', []):
+            xa, xb = max(HEADER_W, self.x_of(a)), self.x_of(b)
+            if xb > xa:
+                p.drawLine(QPointF(xa, RULER_H - 1), QPointF(xb, RULER_H - 1))
+        if self._snap_line is not None:
+            xs = self.x_of(self._snap_line)
+            p.setPen(QPen(QColor('#ffd23f'), 1, Qt.PenStyle.DashLine))
+            p.drawLine(QPointF(xs, RULER_H), QPointF(xs, H))
 
         # Playhead
         x = self.x_of(self.doc.time)
@@ -189,7 +204,7 @@ class TimelineCanvas(QWidget):
     def _fmt(self, t, step):
         m, s = divmod(t, 60)
         if step < 1:
-            return f'{int(m):02d}:{s:04.1f}'
+            return f'{int(m):02d}:{s:05.2f}'
         return f'{int(m):02d}:{int(round(s)):02d}'
 
     def _paint_clip(self, p: QPainter, clip):
@@ -250,6 +265,10 @@ class TimelineCanvas(QWidget):
         badge = f'  fx {fx}' if fx else ''
         p.drawText(QRectF(r.left() + 8, r.top() + 2, r.width() - 12, 16),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, clip.name() + badge)
+        if not selected and clip.id == self._hover_id:
+            p.setPen(QPen(QColor(255, 255, 255, 110), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 6, 6)
         if selected:
             p.setPen(QPen(QColor('#ffffff'), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -347,7 +366,7 @@ class TimelineCanvas(QWidget):
         elif r.right() - pos.x() < EDGE:
             mode = 'trim_r'
         self._drag = {'mode': mode, 'clip': clip, 'x': pos.x(), 'start': clip.start, 'dur': clip.duration,
-                      'track': clip.track, 'moved': False}
+                      'track': clip.track, 'moved': False, 'xoff': self.xoff}
 
     def _snap(self, t: float, exclude) -> float:
         cands = [0.0, self.doc.time]
@@ -355,7 +374,10 @@ class TimelineCanvas(QWidget):
             if c is not exclude:
                 cands += [c.start, c.end]
         best = min(cands, key=lambda c: abs(c - t))
-        return best if abs(best - t) * self.pps < 8 else t
+        if abs(best - t) * self.pps < 8:
+            self._snap_line = best
+            return best
+        return t
 
     def _overlaps(self, clip, start, dur, track):
         return any(o is not clip and o.track == track and o.start < start + dur - 1e-6 and o.end > start + 1e-6
@@ -372,12 +394,20 @@ class TimelineCanvas(QWidget):
                 self.setCursor(Qt.CursorShape.SizeHorCursor if edge else Qt.CursorShape.OpenHandCursor)
             else:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
+            hid = clip.id if clip else None
+            if hid != self._hover_id:
+                self._hover_id = hid
+                self.update()
             return
         if d['mode'] == 'scrub':
             self.doc.set_time(self.t_of(pos.x()))
             return
         clip = d['clip']
-        dt = (pos.x() - d['x']) / self.pps
+        self._last_pos = pos
+        if not self._autoscroll.isActive():
+            self._autoscroll.start(30)
+        self._snap_line = None
+        dt = (pos.x() - d['x'] + self.xoff - d.get('xoff', self.xoff)) / self.pps
         if not d['moved'] and abs(pos.x() - d['x']) < 3:
             return
         if not d['moved']:
@@ -407,6 +437,63 @@ class TimelineCanvas(QWidget):
 
     def mouseReleaseEvent(self, _):
         self._drag = None
+        self._snap_line = None
+        self._autoscroll.stop()
+        self.update()
+
+    def _autoscroll_step(self):
+        """While dragging a clip near the left/right edge, scroll the timeline."""
+        d, pos = self._drag, self._last_pos
+        if not d or pos is None or d['mode'] == 'scrub':
+            self._autoscroll.stop()
+            return
+        step = 0.0
+        if pos.x() > self.width() - 40:
+            step = (pos.x() - (self.width() - 40)) * 0.6
+        elif pos.x() < HEADER_W + 30 and self.xoff > 0:
+            step = -(HEADER_W + 30 - pos.x()) * 0.6
+        if step:
+            self.xoff = max(0.0, self.xoff + step)
+            self.parent_scroll_sync()
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtCore import QEvent
+            ev = QMouseEvent(QEvent.Type.MouseMove, pos, pos, Qt.MouseButton.NoButton,
+                             Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+            self.mouseMoveEvent(ev)
+
+    def contextMenuEvent(self, e):
+        pos = e.pos()
+        clip = self.clip_at(QPointF(pos))
+        m = QMenu(self)
+        if clip:
+            self.doc.select(clip)
+            m.addAction('Duplicate', self.doc.duplicate_selected)
+            m.addAction('Split at playhead', lambda: self.doc.split_selected() or
+                        self.message.emit('Put the playhead inside the sticker to split it.'))
+            m.addSeparator()
+            for which, ph in (('in', clip.trans_in), ('out', clip.trans_out)):
+                if ph.effect != 'None':
+                    m.addAction(f'Remove {"In" if which == "in" else "Out"} transition ({ph.effect})',
+                                lambda w=which: self.doc.set_transition(clip, 'None', w))
+            if clip.effects:
+                def clear_fx():
+                    self.doc.checkpoint()
+                    clip.effects.clear()
+                    self.doc.notify()
+                m.addAction(f'Remove all effects ({len(clip.effects)})', clear_fx)
+            m.addSeparator()
+            m.addAction('Delete', self.doc.delete_selected)
+        else:
+            m.addAction('Add track', self.doc.add_track)
+            m.addAction('Zoom to fit', self.zoom_to_fit)
+        m.exec(e.globalPos())
+
+    def zoom_to_fit(self):
+        dur = max(1.0, self.doc.timeline.duration())
+        self.pps = max(8.0, min(600.0, (self.width() - HEADER_W - 40) / dur))
+        self.xoff = 0.0
+        self.parent_scroll_sync()
+        self.update()
 
     def mouseDoubleClickEvent(self, e):
         clip = self.clip_at(e.position())
@@ -504,6 +591,11 @@ class TimelinePanel(QWidget):
             bar.addWidget(b)
             self.buttons[name] = b
         bar.addStretch(1)
+        fit = QToolButton()
+        fit.setText('Fit')
+        fit.setToolTip('Zoom to fit the whole video')
+        fit.clicked.connect(lambda: self.canvas.zoom_to_fit())
+        bar.addWidget(fit)
         zo = QToolButton()
         zo.setIcon(icon('zoom_out'))
         zo.setToolTip('Zoom out  (Ctrl+wheel)')

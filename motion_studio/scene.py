@@ -11,6 +11,10 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage, QImageR
 from PySide6.QtSvg import QSvgRenderer
 
 
+import threading
+
+_RENDER_LOCK = threading.RLock()
+
 RASTER_EXT = {'.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff'}
 ANIMATED_EXT = {'.gif', '.webp', '.apng'}
 SVG_EXT = {'.svg'}
@@ -143,12 +147,15 @@ class ObjectSource:
                     return img
                 t -= d
             return self._frames[-1][0]
-        # Vector kinds: render at the needed resolution (cached per size).
-        k = min(8.0, max(0.05, pixel_scale))
-        k = round(k * 8) / 8 or 0.125
+        # Vector kinds: render once per power-of-two size and let the painter scale
+        # the rest. A zoom or pop then reuses one sharp picture instead of
+        # re-rasterising on every frame (which caused stutter).
+        need = min(8.0, max(0.125, pixel_scale))
+        k = 2.0 ** (math.ceil(math.log2(need) * 2 - 1e-9) / 2)      # steps of ×1.41
         key = (self.kind, k, tuple(self.text.__dict__.values()) if self.kind == 'text' else None)
-        if key in self._rendered:
-            return self._rendered[key]
+        with _RENDER_LOCK:
+            if key in self._rendered:
+                return self._rendered[key]
         w, h = self.native_size()
         img = QImage(max(1, int(math.ceil(w * k))), max(1, int(math.ceil(h * k))),
                      QImage.Format.Format_ARGB32_Premultiplied)
@@ -168,9 +175,10 @@ class ObjectSource:
                 p.strokePath(path, pen)
             p.fillPath(path, QBrush(QColor(st.color)))
         p.end()
-        if len(self._rendered) > 24:
-            self._rendered.clear()
-        self._rendered[key] = img
+        with _RENDER_LOCK:
+            if len(self._rendered) > 12:
+                self._rendered.clear()
+            self._rendered[key] = img
         return img
 
     def label(self) -> str:

@@ -243,9 +243,10 @@ class Clip:
 
 @dataclass
 class Timeline:
-    width: int = 1920
-    height: int = 1080
-    fps: float = 30.0
+    # Default: 2560 x 1440 at 60 frames per second (the size used for the videos).
+    width: int = 2560
+    height: int = 1440
+    fps: float = 60.0
     tracks: int = 3
     clips: list[Clip] = field(default_factory=list)
     hidden_tracks: set = field(default_factory=set)
@@ -276,8 +277,8 @@ class Timeline:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Timeline':
-        tl = cls(width=int(d.get('width', 1920)), height=int(d.get('height', 1080)),
-                 fps=float(d.get('fps', 30)), tracks=int(d.get('tracks', 3)))
+        tl = cls(width=int(d.get('width', 2560)), height=int(d.get('height', 1440)),
+                 fps=float(d.get('fps', 60)), tracks=int(d.get('tracks', 3)))
         tl.hidden_tracks = set(d.get('hidden_tracks') or [])
         tl.clips = [Clip.from_dict(c) for c in d.get('clips') or []]
         tl.tracks = max([tl.tracks] + [c.track + 1 for c in tl.clips])
@@ -386,18 +387,35 @@ def apply_looks(img: QImage, looks: list[EffectInstance], px_per_canvas: float) 
 
 
 class _LookCache:
+    """Pictures with look effects applied, least recently used dropped first,
+    bounded by memory (not by count) so a blur transition does not evict the
+    steady pictures."""
+
+    BUDGET = 700 * 1024 * 1024
+
     def __init__(self):
-        self.data = {}
+        from collections import OrderedDict
+        import threading
+        self.data = OrderedDict()
+        self.bytes = 0
+        self.lock = threading.Lock()
 
     def get(self, img: QImage, looks, k):
         key = (img.cacheKey(), round(k, 3),
                tuple((e.type, tuple(sorted((a, str(b)) for a, b in e.params.items()))) for e in looks))
-        hit = self.data.get(key)
-        if hit is None:
-            hit = apply_looks(img, looks, k)
-            if len(self.data) > 64:
-                self.data.clear()
+        with self.lock:
+            hit = self.data.get(key)
+            if hit is not None:
+                self.data.move_to_end(key)
+                return hit
+        hit = apply_looks(img, looks, k)
+        size = hit[0].sizeInBytes()
+        with self.lock:
             self.data[key] = hit
+            self.bytes += size
+            while self.bytes > self.BUDGET and len(self.data) > 1:
+                _, old = self.data.popitem(last=False)
+                self.bytes -= old[0].sizeInBytes()
         return hit
 
 
@@ -437,7 +455,8 @@ def draw_clip(p: QPainter, clip: Clip, local: float, cw: int, ch: int, f: float)
     k = per_native / max(1e-6, clip.scale)            # picture px per canvas px
     looks = [e for e in clip.effects if e.enabled and e.info().category == 'Look']
     if total.blur > 0.3:
-        looks = looks + [EffectInstance('blur', True, {'amount': total.blur})]
+        # Quantised so a replay reuses the blurred pictures from the cache.
+        looks = looks + [EffectInstance('blur', True, {'amount': round(total.blur * 2) / 2})]
     pad = 0.0
     if looks:
         img, pad = LOOK_CACHE.get(img, looks, k)
@@ -488,3 +507,13 @@ def clip_bounds(clip: Clip, local: float, cw: int, ch: int) -> QRectF:
 
 def snapshot(tl: Timeline) -> dict:
     return copy.deepcopy(tl.to_dict())
+
+
+def clip_box(clip: Clip, local: float, cw: int, ch: int) -> tuple[float, float, float, float, float]:
+    """The sticker's on-canvas box at a moment: centre x, centre y, width, height,
+    rotation in degrees (canvas pixels). Used for the selection handles."""
+    move, motion, _ = clip.motion_at(local, cw, ch)
+    t = move.combine(motion)
+    w, h = clip.size()
+    return (clip.x * cw + t.dx, clip.y * ch + t.dy, w * abs(t.scale_x), h * abs(t.scale_y),
+            clip.rotation + t.rotation)

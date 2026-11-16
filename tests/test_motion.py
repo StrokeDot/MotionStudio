@@ -167,3 +167,51 @@ def test_png_sequence(tmp_path):
     tl.clips = [_star_clip(duration=1.0)]
     export(tl, str(tmp_path / 'frames'), 'png')
     assert len(os.listdir(tmp_path / 'frames')) == 5
+
+
+def test_default_video_is_1440p_60fps():
+    tl = Timeline()
+    assert (tl.width, tl.height, tl.fps) == (2560, 1440, 60.0)
+    assert Timeline.from_dict({}).fps == 60.0
+
+
+def test_frame_cache_only_invalidates_the_edited_sticker():
+    from motion_studio.preview_cache import FrameCache
+    tl = Timeline(width=640, height=360, fps=10)
+    a = _star_clip(start=0, duration=1)
+    b = _star_clip(start=2, duration=1)
+    tl.clips = [a, b]
+    cache = FrameCache(budget=50 * 1024 * 1024)
+    cache.refresh_fingerprints(tl)
+    ka, kb = cache.key(tl, 5, 320), cache.key(tl, 25, 320)
+    cache.put(ka, render_timeline(tl, 0.5, 320))
+    cache.put(kb, render_timeline(tl, 2.5, 320))
+    b.rotation = 30
+    cache.refresh_fingerprints(tl)
+    assert cache.has(cache.key(tl, 5, 320))        # untouched sticker: still ready
+    assert not cache.has(cache.key(tl, 25, 320))   # edited sticker: must be redrawn
+    b.rotation = 0.0
+    b.start = 3.0                                   # moving in time keeps its frames
+    cache.refresh_fingerprints(tl)
+    assert cache.has(cache.key(tl, 35, 320))
+
+
+def test_parallel_export_matches_single_core(tmp_path):
+    tl = Timeline(width=320, height=180, fps=30)
+    c = _star_clip(duration=1.0)
+    c.trans_in = Phase(effect='Pop', duration=0.5)
+    c.effects = [EffectInstance('glow')]
+    tl.clips = [c, Clip(source=ObjectSource(kind='text'), duration=1.0, track=1)]
+    a, b = str(tmp_path / 'a'), str(tmp_path / 'b')
+    export(tl, a, 'png', workers=1)
+    import motion_studio.export as E
+    real = E.render_timeline
+    E.render_timeline = None        # this process must not render: the workers do
+    try:
+        export(tl, b, 'png', workers=2)
+    finally:
+        E.render_timeline = real
+    fa, fb = sorted(os.listdir(a)), sorted(os.listdir(b))
+    assert fa == fb and len(fa) == 30
+    for name in fa[::7]:
+        assert QImage(os.path.join(a, name)) == QImage(os.path.join(b, name))

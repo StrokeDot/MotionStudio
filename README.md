@@ -3,6 +3,7 @@
 A Filmora-style app focused on three things: **Transitions, Effects and Stickers**.
 Build animated stickers on a timeline and export them with a transparent background
 (ProRes 4444 `.mov`) to drop onto a video editor's timeline.
+Default video: **2560 × 1440 at 60 fps** (changeable per project).
 
 ## Layout (like Filmora)
 - **Library (top left):** Transitions / Effects / Stickers tabs, categories, search, and
@@ -25,3 +26,11 @@ Build animated stickers on a timeline and export them with a transparent backgro
 
 Run from source: `pip install -r requirements.txt` then `python run.py`.
 Tests: `python -m pytest tests`.
+
+## Smoothness
+- Preview frames are cached once made; editing one sticker only redraws the frames
+  where it appears. While you are not playing, frames ahead of the playhead are
+  prepared automatically (teal line under the ruler, "Ready to play").
+- Playback follows an exact clock at the project frame rate.
+- Export renders on several CPU cores, and the output file is only replaced once
+  it is complete.

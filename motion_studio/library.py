@@ -19,7 +19,7 @@ from .timeline import (EFFECT_TYPES, EFFECTS_BY_ID, TRANSITION_CATEGORIES, Clip,
 
 MIME = 'application/x-motionstudio-item'
 THUMB = QSize(136, 77)
-FRAMES = 14
+FRAMES = 30            # hover previews play at 30 frames a second
 
 
 def presets_path() -> str:
@@ -211,17 +211,42 @@ class Grid(QListWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._step)
         self._frame_cache: dict = {}
+        self._pending = []
+        self._fill = QTimer(self)
+        self._fill.setSingleShot(True)
+        self._fill.timeout.connect(self._fill_step)
 
     def set_items(self, items: list[dict]):
+        """Show the cards at once with a plain placeholder, then fill in the
+        thumbnails a few at a time so switching tabs never freezes the window."""
         self._stop()
         self.clear()
+        self._pending = []
+        blank = QIcon(_card_background(THUMB.width() * 2, THUMB.height() * 2))
         for it in items:
             li = QListWidgetItem(it['name'])
             li.setData(Qt.ItemDataRole.UserRole, it)
             li.setToolTip(it.get('tip') or '')
-            li.setIcon(QIcon(self._still(it)))
+            key = ('still', self._key(it))
+            li.setIcon(QIcon(self._frame_cache[key]) if key in self._frame_cache else blank)
             li.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             self.addItem(li)
+            if key not in self._frame_cache:
+                self._pending.append(li)
+        self._fill.start(0)
+
+    def _fill_step(self):
+        import time as _t
+        t0 = _t.perf_counter()
+        while self._pending and _t.perf_counter() - t0 < 0.012:
+            li = self._pending.pop(0)
+            try:
+                if li is not self._anim_item:
+                    li.setIcon(QIcon(self._still(li.data(Qt.ItemDataRole.UserRole))))
+            except RuntimeError:          # list was cleared meanwhile
+                pass
+        if self._pending:
+            self._fill.start(0)
 
     def _key(self, it):
         return json.dumps({k: v for k, v in it.items() if k != 'tip'}, sort_keys=True, default=str)
@@ -248,7 +273,7 @@ class Grid(QListWidget):
         if len(frames) <= 1:
             return
         self._anim_item, self._anim_frames, self._anim_i = li, frames, 0
-        self._timer.start(70)
+        self._timer.start(33)
 
     def _step(self):
         if self._anim_item is None:

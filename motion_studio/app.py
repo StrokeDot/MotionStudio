@@ -81,6 +81,8 @@ class MainWindow(QMainWindow):
         self.props.library_changed.connect(self.library.refresh)
         self.timeline.message.connect(self._msg)
         self.doc.changed.connect(self._title)
+        self.player.ready_changed.connect(self.timeline.canvas.update)
+        self.player.btn_full.clicked.connect(self._toggle_big_preview)
 
         self._menus()
         self._starter()
@@ -123,6 +125,8 @@ class MainWindow(QMainWindow):
         act(play_m, 'Previous frame', 'Left', lambda: self.player.step(-1))
         act(play_m, 'Next frame', 'Right', lambda: self.player.step(1))
         act(play_m, 'Go to start', 'Home', self.player.stop_to_start)
+        act(play_m, 'Bigger preview', 'F', self._toggle_big_preview)
+        act(play_m, 'Repeat playback', 'Ctrl+L', self.player.loop_btn.toggle)
 
         export_btn = QPushButton('Export')
         export_btn.setProperty('accent', True)
@@ -143,6 +147,13 @@ class MainWindow(QMainWindow):
         self.doc._undo.clear()
         self.doc.dirty = False
         self.doc.changed.emit()
+
+    def _toggle_big_preview(self):
+        """Hide the side panels and timeline for a bigger picture, and back."""
+        big = self.library.isVisible()
+        for w in (self.library, self.props, self.timeline):
+            w.setVisible(not big)
+        self.player.btn_full.setToolTip('Restore panels' if big else 'Bigger preview')
 
     def _title(self):
         name = os.path.basename(self.doc.path) if self.doc.path else 'Untitled'
