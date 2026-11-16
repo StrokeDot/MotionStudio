@@ -63,8 +63,7 @@ def test_unsafe_zip_is_refused(tmp_path):
         updater.stage(str(bad), str(tmp_path / 'files'))
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='the installer script runs on Windows')
-def test_install_script_replaces_the_app_and_restarts_it(tmp_path):
+def _install_case(tmp_path, detach):
     app = tmp_path / 'MotionStudio'
     (app / '_internal').mkdir(parents=True)
     (app / 'old_only.txt').write_text('old')
@@ -77,8 +76,15 @@ def test_install_script_replaces_the_app_and_restarts_it(tmp_path):
     (new / 'restart.cmd').write_text(f'@echo started> "{marker}"\r\n')
     sleeper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)'])
     proc = updater.launch_installer(str(new), cleanup=str(root), target=str(app), exe=str(exe),
-                                    pid=sleeper.pid, detach=False)
-    out, _ = proc.communicate(timeout=180)
+                                    pid=sleeper.pid, detach=detach)
+    if detach:                       # exactly how the app starts it: just wait for the result
+        for _ in range(600):
+            if marker.exists() and not root.exists():
+                break
+            time.sleep(0.2)
+        out = '(detached)'
+    else:
+        out, _ = proc.communicate(timeout=180)
     log = Path(updater.log_path()).read_text(encoding='utf-8', errors='replace') \
         if os.path.exists(updater.log_path()) else '(no log)'
     info = f'exit {proc.returncode}\n--- output ---\n{out}\n--- log ---\n{log[-3000:]}'
@@ -92,3 +98,13 @@ def test_install_script_replaces_the_app_and_restarts_it(tmp_path):
     assert not (app / 'old_only.txt').exists()          # mirrored exactly
     assert marker.exists()                               # app started again
     assert not root.exists()                             # download folder cleaned up
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='the installer script runs on Windows')
+def test_install_script_works_detached_like_the_app(tmp_path):
+    _install_case(tmp_path, detach=True)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='the installer script runs on Windows')
+def test_install_script_output(tmp_path):
+    _install_case(tmp_path, detach=False)

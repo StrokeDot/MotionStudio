@@ -180,8 +180,11 @@ def launch_installer(new_app_folder: str, cleanup: str = '', target: str | None 
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     flags = 0
     if os.name == 'nt':
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    return subprocess.Popen(cmd, creationflags=flags, close_fds=True)
+        # A hidden console (not a fully detached process: PowerShell needs a console).
+        # It keeps running after the app quits.
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(cmd, creationflags=flags, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def staging_root_for(build: int) -> str:
