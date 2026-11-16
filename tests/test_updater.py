@@ -77,12 +77,17 @@ def test_install_script_replaces_the_app_and_restarts_it(tmp_path):
     (new / 'restart.cmd').write_text(f'@echo started> "{marker}"\r\n')
     sleeper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)'])
     proc = updater.launch_installer(str(new), cleanup=str(root), target=str(app), exe=str(exe),
-                                    pid=sleeper.pid)
-    proc.wait(timeout=120)
+                                    pid=sleeper.pid, detach=False)
+    out, _ = proc.communicate(timeout=180)
+    log = Path(updater.log_path()).read_text(encoding='utf-8', errors='replace') \
+        if os.path.exists(updater.log_path()) else '(no log)'
+    info = f'exit {proc.returncode}\n--- output ---\n{out}\n--- log ---\n{log[-3000:]}'
+    print(info)
     for _ in range(50):
         if marker.exists():
             break
         time.sleep(0.2)
+    assert (app / '_internal' / 'lib.txt').exists(), info
     assert (app / '_internal' / 'lib.txt').read_text() == 'new lib'
     assert not (app / 'old_only.txt').exists()          # mirrored exactly
     assert marker.exists()                               # app started again

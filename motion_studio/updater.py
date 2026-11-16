@@ -168,7 +168,7 @@ def log_path() -> str:
 
 
 def launch_installer(new_app_folder: str, cleanup: str = '', target: str | None = None,
-                     exe: str | None = None, pid: int | None = None) -> subprocess.Popen:
+                     exe: str | None = None, pid: int | None = None, detach: bool = True) -> subprocess.Popen:
     """Start the PowerShell script that finishes the update after this app quits."""
     target = target or app_dir()
     exe = exe or os.path.join(target, 'MotionStudio.exe')
@@ -176,9 +176,11 @@ def launch_installer(new_app_folder: str, cleanup: str = '', target: str | None 
     cmd = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
            '-File', script, '-AppPid', str(pid or os.getpid()), '-Src', new_app_folder, '-Dst', target,
            '-Exe', exe, '-Log', log_path(), '-Cleanup', cleanup]
+    if not detach:              # tests: wait for it and see its output
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     flags = 0
     if os.name == 'nt':
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     return subprocess.Popen(cmd, creationflags=flags, close_fds=True)
 
 
