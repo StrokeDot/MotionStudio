@@ -227,7 +227,12 @@ class Project:
 
     def fit_object(self, fraction: float = 0.5) -> None:
         w, h = self.source.native_size()
-        self.scale = min(1.0, fraction * self.height / h, fraction * self.width / w) if w and h else 1.0
+        if not (w and h):
+            self.scale = 1.0
+            return
+        fit = min(fraction * self.height / h, fraction * self.width / w)
+        # Vectors scale up sharply; pictures are never enlarged past their own pixels.
+        self.scale = fit if self.source.kind == 'svg' else min(1.0, fit)
 
     def travel(self, direction: str) -> float:
         """Distance that puts the object just off-screen when it starts behind its
